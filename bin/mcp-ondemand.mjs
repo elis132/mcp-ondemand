@@ -4,7 +4,8 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { CLAUDE_JSON, ENTRY, importPlugins, importServers, pluginServers, restoreServers } from "../src/claude-config.mjs";
 import { DEFAULT_IDLE, expand, HOME, loadServers, readCache, SERVERS } from "../src/config.mjs";
-import { refresh, serve, VERSION } from "../src/proxy.mjs";
+import { daemonPid, launchDaemon, runDaemon, serve, stopDaemon } from "../src/daemon.mjs";
+import { refresh, VERSION } from "../src/proxy.mjs";
 
 const HELP = `mcp-ondemand ${VERSION}: MCP servers that only run while they are used.
 
@@ -15,10 +16,13 @@ const HELP = `mcp-ondemand ${VERSION}: MCP servers that only run while they are 
       --only a,b  --except a,b     pick servers (or plugins, with --plugins)
       --dry-run                    show what would move, change nothing
   mcp-ondemand refresh [name]      start servers once to rebuild their cache
-  mcp-ondemand status              configured servers and their cache
+  mcp-ondemand status              configured servers, their cache, and the shared daemon
+  mcp-ondemand stop                stop the shared daemon and every server it runs
   mcp-ondemand doctor              check the setup and say what is wrong
   mcp-ondemand restore [--only a,b]  put servers back where they came from
 
+Sessions share one daemon, so they share servers (perSession servers excepted).
+MCP_ONDEMAND_SHARED=0 runs each session on its own instead.
 Files live in ${HOME} (set MCP_ONDEMAND_HOME to move them).`;
 
 const [cmd, ...rest] = process.argv.slice(2);
@@ -115,12 +119,25 @@ switch (cmd) {
   case "refresh":
     process.exit((await refresh(rest[0] ? [rest[0]] : undefined)) ? 1 : 0);
   case "status": {
+    const pid = daemonPid();
+    console.log(pid ? `Shared daemon running, pid ${pid}. Ask it for live details with the ondemand_status tool.\n` : "Shared daemon not running (it starts with the first session).\n");
     const servers = loadServers();
     if (!Object.keys(servers).length) console.log("No servers configured. Run: mcp-ondemand import");
     for (const [name, s] of Object.entries(servers)) {
       const c = readCache(name, s);
-      console.log(`${name}: ${c ? `${c.tools?.length ?? 0} tools, cached ${c.at}` : `no cache (run: mcp-ondemand refresh ${name})`}; idle ${s.idle ?? DEFAULT_IDLE}s${s.preload ? ", preload" : ""}${s.from?.startsWith("plugin:") ? `, from ${s.from}` : ""}`);
+      console.log(`${name}: ${c ? `${c.tools?.length ?? 0} tools, cached ${c.at}` : `no cache (run: mcp-ondemand refresh ${name})`}; idle ${s.idle ?? DEFAULT_IDLE}s${s.preload ? ", preload" : ""}${s.perSession ? ", per session" : ""}${s.from?.startsWith("plugin:") ? `, from ${s.from}` : ""}`);
     }
+    break;
+  }
+  case "daemon":
+    await runDaemon();
+    break;
+  case "daemon-launch":
+    launchDaemon();
+    process.exit(0);
+  case "stop": {
+    const pid = stopDaemon();
+    console.log(pid ? `Stopped the daemon (pid ${pid}) and its servers. Open sessions reconnect on their next start.` : "No daemon running.");
     break;
   }
   case "doctor":

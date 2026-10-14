@@ -31,6 +31,7 @@ s.registerTool("progress", { description: "Report progress three times" }, async
   }
   return done("progressed");
 });
+s.registerTool("cwd", { description: "Return the working folder" }, async () => done(process.cwd()));
 s.registerTool("crash", { description: "Exit the process" }, async () => process.exit(1));
 
 s.registerPrompt("greet", { description: "A greeting", argsSchema: { who: z.string() } }, ({ who }) => ({

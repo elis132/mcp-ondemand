@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.2.0 (2026-10-14)
+
+- Shared daemon: sessions share one copy of each server instead of starting their own. Started by the first
+  session, outside any session's process tree, and gone a minute after the last session and server.
+- `perSession: true` gives a server one copy per session, started in that session's project folder.
+- A newer version takes over from an older daemon without cutting off its sessions.
+- A changed `servers.json` is picked up by the next session; only changed servers restart.
+- `stop` stops the daemon and its servers. `status` shows whether it runs.
+- `MCP_ONDEMAND_SHARED=0` keeps every session on its own, and a session falls back to that if the daemon cannot start.
+
 ## 1.1.0 (2026-10-14)
 
 - Prompts, resources and resource templates of the servers behind it are passed through, cached like tools.

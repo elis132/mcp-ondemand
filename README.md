@@ -11,8 +11,10 @@ mcp-ondemand is one small MCP server that sits in front of all the others:
 - **Claude sees every real tool at once**, answered from a cache on disk. Nothing else is started.
 - **A server starts on its first tool call**, and stops after it has been idle for a while (10 minutes by default).
   A call that is still running is never cut off.
-- **Nothing outlives the session.** When Claude closes, every server it started is killed, including the children
-  that launchers like `npx`, `uvx`, `cmd` and `wsl` start.
+- **Sessions share servers.** Five Claude sessions using the same server run one copy of it, not five. Servers that
+  hold state, like a browser, can be kept per session instead.
+- **Nothing is left behind.** Idle servers are stopped, a session's own servers die with it, and the whole process
+  tree goes, including the children that launchers like `npx`, `uvx`, `cmd` and `wsl` start.
 - **Your tools keep their real names and schemas**, so Claude Code's per-tool permissions keep working. No
   meta-tools, no extra round trips to find a tool.
 - **Prompts and resources pass through too**, and so do progress reports and cancellation: press Esc and the call
@@ -20,9 +22,9 @@ mcp-ondemand is one small MCP server that sits in front of all the others:
 - **Plugin MCP servers too:** `import --plugins` moves the servers of your Claude Code plugins behind it.
 
 ```
-Claude Code ── mcp-ondemand ──┬── playwright     (running, 1 call in flight)
-                              ├── github         (stopped)
-                              └── ...            (stopped)
+Claude session 1 ─┐                      ┌── github       (running, shared)
+Claude session 2 ─┼── mcp-ondemand ──────┼── playwright   (one per session)
+Claude session 3 ─┘     daemon           └── ...          (stopped)
 ```
 
 ## Install
@@ -71,6 +73,7 @@ mcp-ondemand import --plugins [--only a,b] [--dry-run]   # servers from Claude C
 mcp-ondemand refresh [name]        # start servers once to rebuild their cache
 mcp-ondemand status                # configured servers and their cache
 mcp-ondemand doctor                # check the setup and say what to fix
+mcp-ondemand stop                  # stop the shared daemon and every server it runs
 mcp-ondemand restore [--only a,b]  # put servers back where they came from
 ```
 
@@ -101,7 +104,8 @@ Everything lives in `~/.mcp-ondemand/` (set `MCP_ONDEMAND_HOME` to move it): `se
 | Field | Default | Meaning |
 | --- | --- | --- |
 | `idle` | `600` | Seconds without calls before the server is stopped. `0` keeps it running for the whole session |
-| `preload` | `false` | Start it with the session instead of on the first call |
+| `preload` | `false` | Start it as soon as the daemon starts instead of on the first call |
+| `perSession` | `false` | Give each session its own copy, started in that session's project folder. For servers that keep state between calls, such as a browser |
 | `disabled` | `false` | Keep the entry but do not offer its tools |
 
 **Secrets out of the file:** `${NAME}` and `${NAME:-fallback}` in `command`, `args`, `env` and `cwd` are read from
@@ -117,6 +121,15 @@ once in the background the next time a session opens.
 
 ## How it works
 
+- **Shared daemon:** the first session starts a small background daemon, and every session's `mcp-ondemand` becomes
+  a pipe to it (a named pipe on Windows, a unix socket elsewhere). The daemon runs the servers, so sessions share
+  them. It exits a minute after the last session has gone and the last server has stopped. It is started through
+  a short-lived launcher, so it is not part of any one session's process tree. Set `MCP_ONDEMAND_SHARED=0` to run
+  each session on its own instead, as in 1.1; if the daemon cannot start, a session falls back to that by itself.
+- **Updates:** a session of a newer version asks an older daemon to step aside; it finishes its current sessions
+  and exits while the new one takes over. A changed `servers.json` is picked up by the next session that starts:
+  changed servers are restarted, the rest keep running.
+
 - **Cache:** each server's tools, prompts, resources, resource templates and instructions are stored per server, tied to its command, args,
   env and cwd. Change any of those and the cache is rebuilt. Env values are hashed, never written to the cache.
 - **Staying current:** whenever a server runs, its live tool list is compared with the cache. If they differ, the
@@ -131,22 +144,25 @@ once in the background the next time a session opens.
 
 - **The first call to a stopped server is slower**, by however long that server takes to start (usually 1 to 5 seconds).
 - **Stopping a server loses its state.** A browser automation server forgets its open page. Give such servers a
-  longer `idle`, or `0`.
+  longer `idle`, or `0`, and `perSession` so sessions do not share one browser.
+- **Shared servers run in the daemon's environment**: the environment of the session that started it, with the
+  mcp-ondemand folder as working folder. A server that depends on the session's project folder should be
+  `perSession`, which starts it in that folder.
 - **Only local (stdio) servers.** Remote servers have no process to save.
 - **Plugins:** a plugin whose servers include a remote one is left alone by `import --plugins`, because switching
   the plugin off would lose that server too.
 - **Resource subscriptions** (`resources/subscribe`) are not passed through.
 - mcp-ondemand sees everything that passes between Claude and your servers, including the env you configure for
-  them. It runs locally and makes no network requests of its own. Read the code: it is about 800 lines.
+  them. It runs locally and makes no network requests of its own. Read the code: it is about 1,150 lines.
 
 ## Compared with others
 
-| | Tools Claude sees | On demand | Idle stop | Process trees | One process | Prompts, resources | Progress, cancel | Plugins |
+| | Tools Claude sees | On demand | Idle stop | Process trees | Shared across sessions | Prompts, resources | Progress, cancel | Plugins |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| **mcp-ondemand** | real tools | yes | yes | yes | yes | yes | yes | yes |
-| [mcp-snooze](https://github.com/askmegit/mcp-snooze) | real tools | yes | yes | yes (Windows untested) | no, one per server | yes | passes through | no |
-| [voicetreelab/lazy-mcp](https://github.com/voicetreelab/lazy-mcp) | 2 meta-tools | yes | no | no | yes | no | no | no |
-| [mcp-lazy-load](https://github.com/petercha90/mcp-lazy-load), [mcp-lazy-proxy](https://github.com/sarthakpranesh/mcp-lazy-proxy) | meta-tools | yes | varies | no | yes | no | no | no |
+| **mcp-ondemand** | real tools | yes | yes | yes | yes, or per session | yes | yes | yes |
+| [mcp-snooze](https://github.com/askmegit/mcp-snooze) | real tools | yes | yes | yes (Windows untested) | no | yes | passes through | no |
+| [voicetreelab/lazy-mcp](https://github.com/voicetreelab/lazy-mcp) | 2 meta-tools | yes | no | no | no | no | no | no |
+| [mcp-lazy-load](https://github.com/petercha90/mcp-lazy-load), [mcp-lazy-proxy](https://github.com/sarthakpranesh/mcp-lazy-proxy) | meta-tools | yes | varies | no | no | no | no | no |
 
 Meta-tool proxies were built to save context. Claude Code already loads tool schemas on demand, so here the cost
 that is left is processes and memory, which is what mcp-ondemand removes.
@@ -168,8 +184,9 @@ npm test
 ```
 
 The tests run the real proxy against a fake MCP server: lazy start, shared starts, idle stop, long calls,
-crashes, restart, cleanup when the session ends, prompts, resources, progress, cancellation, `${VAR}`, and
-import and restore of servers and plugins. CI runs them on Linux, macOS and Windows.
+crashes, restart, cleanup when the session ends, prompts, resources, progress, cancellation, `${VAR}`, two
+sessions sharing one daemon, perSession servers, a daemon stepping aside for another version and exiting when
+idle, and import and restore of servers and plugins. CI runs them on Linux, macOS and Windows.
 
 ## License
 

@@ -42,7 +42,8 @@ function setup(extra = {}, env = {}) {
       const transport = new StdioClientTransport({
         command: process.execPath,
         args: [join(root, "bin", "mcp-ondemand.mjs")],
-        env: { ...process.env, ...env, MCP_ONDEMAND_HOME: home },
+        // These tests cover a session on its own; shared.test.mjs covers the daemon.
+        env: { ...process.env, ...env, MCP_ONDEMAND_HOME: home, MCP_ONDEMAND_SHARED: "0" },
         cwd: root,
       });
       const client = new Client({ name: "test", version: "1" });
@@ -72,7 +73,7 @@ test("servers start on first use, stop when idle, and never outlive the session"
 async function lifecycle(f, client) {
   // Warm cache: tools and instructions come from the cache, nothing is started.
   const names = (await client.listTools()).tools.map((t) => t.name).sort();
-  assert.deepEqual(names, ["fake__crash", "fake__echo", "fake__env", "fake__progress", "fake__slow", "ondemand_restart", "ondemand_status"]);
+  assert.deepEqual(names, ["fake__crash", "fake__cwd", "fake__echo", "fake__env", "fake__progress", "fake__slow", "ondemand_restart", "ondemand_status"]);
   assert.match(client.getInstructions(), /Fake server instructions/);
   await sleep(300);
   assert.equal(f.starts(), 1, "listing tools starts nothing");

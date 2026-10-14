@@ -1,6 +1,6 @@
 {
   "name": "mcp-ondemand",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Run MCP servers only while they are used. One proxy lists every tool from cache; each server starts on its first call and stops when idle.",
   "type": "module",
   "bin": {
@@ -11,7 +11,7 @@
     "src"
   ],
   "scripts": {
-    "test": "node --test --test-concurrency=1 --test-timeout=120000 test/proxy.test.mjs test/claude-config.test.mjs"
+    "test": "node --test --test-concurrency=1 --test-timeout=120000 test/proxy.test.mjs test/shared.test.mjs test/claude-config.test.mjs"
   },
   "engines": {
     "node": ">=20"

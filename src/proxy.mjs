@@ -20,7 +20,7 @@ import {
 import { DEFAULT_IDLE, ensureHome, expand, loadServers, log, readCache, writeCache } from "./config.mjs";
 import { killTree, processTable, treeMemory } from "./kill.mjs";
 
-export const VERSION = "1.1.0";
+export const VERSION = "1.2.0";
 // Claude Code shows a tool as mcp__<proxy name>__<tool>, and tool names may be at most 64 characters.
 const PREFIX = process.env.MCP_ONDEMAND_NAME ?? "ondemand";
 const MAX_NAME = 64 - `mcp__${PREFIX}__`.length;
@@ -33,8 +33,10 @@ const shorten = (full) =>
 const stem = (template) => template.split("{")[0];
 
 export class Hub {
-  constructor(servers = loadServers()) {
+  // cwd: where servers without their own cwd start (the session's project folder, when known).
+  constructor(servers = loadServers(), { cwd } = {}) {
     this.servers = servers;
+    this.cwd = cwd;
     this.live = new Map(); // name -> { client, pid, starting, inFlight, timer, startedAt }
     this.stats = new Map(); // name -> { calls, starts, lastError }
     this.onChanged = () => {};
@@ -56,7 +58,7 @@ export class Hub {
     this.promptMap = new Map();
     this.resourceMap = new Map();
     this.templateList = [];
-    this.tools = [...ownTools(Object.keys(this.servers))];
+    this.tools = [];
     this.prompts = [];
     this.resources = [];
     this.templates = [];
@@ -145,7 +147,7 @@ export class Hub {
         command: def.command,
         args: def.args,
         env: { ...process.env, ...def.env },
-        cwd: def.cwd,
+        cwd: def.cwd ?? this.cwd,
         stderr: "ignore",
       });
       const client = new Client({ name: "mcp-ondemand", version: VERSION });
@@ -183,6 +185,23 @@ export class Hub {
     log("stop", name, why);
     killTree(s.pid);
     await s.client?.close().catch(() => {});
+  }
+
+  // A new servers.json: servers that were removed or changed are stopped, the rest keep running.
+  async reload(servers) {
+    for (const name of this.live.keys()) {
+      if (JSON.stringify(servers[name]) !== JSON.stringify(this.servers[name])) await this.stop(name, "config changed");
+    }
+    this.servers = servers;
+    this.rebuild();
+  }
+
+  // Servers without a cache are started once in the background to learn what they offer. Preload servers stay up.
+  warmup({ preload = true } = {}) {
+    for (const [name, def] of Object.entries(this.servers)) {
+      if (def.preload && preload) this.start(name).catch(() => {});
+      else if (!this.cache(name)) this.start(name).then(() => this.stop(name, "cache built"), () => {});
+    }
   }
 
   stopAll(why) {
@@ -238,11 +257,6 @@ export class Hub {
   // extra: the SDK's request context. Its signal cancels the call on the real server too, and progress from the
   // real server is passed on when the client asked for it.
   async callTool(id, args, extra = {}) {
-    if (id === "ondemand_status") return text((await this.status()).join("\n"));
-    if (id === "ondemand_restart") {
-      await this.stop(args?.server, "restart requested");
-      return text(`${args?.server} stopped. It starts again on its next call.`);
-    }
     const target = this.toolMap.get(id);
     if (!target) return text(`Unknown tool ${id}`, true);
     const token = extra.progressToken;
@@ -290,6 +304,54 @@ function ownTools(names) {
   ];
 }
 
+export const CAPABILITIES = { tools: { listChanged: true }, prompts: { listChanged: true }, resources: { listChanged: true } };
+
+export const instructionsOf = (hubs) => {
+  const [first, ...rest] = hubs.map((h) => h.instructions());
+  return [first, ...rest.map((t) => t.split("\n\n").slice(1).join("\n\n"))].filter(Boolean).join("\n\n");
+};
+
+export function notifyChanged(server) {
+  for (const send of ["sendToolListChanged", "sendPromptListChanged", "sendResourceListChanged"]) server[send]().catch(() => {});
+}
+
+// Serve one client from one or more hubs: the shared one, plus the session's own for perSession servers.
+export function bind(server, hubs) {
+  const find = (test) => hubs.find(test);
+  const all = (key) => hubs.flatMap((h) => h[key]);
+  const names = () => hubs.flatMap((h) => Object.keys(h.servers));
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [...ownTools(names()), ...all("tools")] }));
+  server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
+    const { name: id, arguments: args } = req.params;
+    if (id === "ondemand_status") {
+      const lines = await Promise.all(hubs.map((h, i) => h.status().then((l) => (i ? l.map((x) => `${x} (this session)`) : l))));
+      return text(lines.flat().join("\n"));
+    }
+    if (id === "ondemand_restart") {
+      const hub = find((h) => h.servers[args?.server]);
+      if (!hub) return text(`No server named ${args?.server}`, true);
+      await hub.stop(args.server, "restart requested");
+      return text(`${args.server} stopped. It starts again on its next call.`);
+    }
+    const hub = find((h) => h.toolMap.has(id));
+    if (!hub) return text(`Unknown tool ${id}`, true);
+    return hub.callTool(id, args, { signal: extra.signal, sendNotification: extra.sendNotification, progressToken: req.params._meta?.progressToken });
+  });
+  server.setRequestHandler(ListPromptsRequestSchema, async () => ({ prompts: all("prompts") }));
+  server.setRequestHandler(GetPromptRequestSchema, async (req) => {
+    const hub = find((h) => h.promptMap.has(req.params.name));
+    if (!hub) throw new Error(`Unknown prompt ${req.params.name}`);
+    return hub.getPrompt(req.params.name, req.params.arguments);
+  });
+  server.setRequestHandler(ListResourcesRequestSchema, async () => ({ resources: all("resources") }));
+  server.setRequestHandler(ListResourceTemplatesRequestSchema, async () => ({ resourceTemplates: all("templates") }));
+  server.setRequestHandler(ReadResourceRequestSchema, async (req) => {
+    const hub = find((h) => h.serverForUri(req.params.uri));
+    if (!hub) throw new Error(`No server offers ${req.params.uri}`);
+    return hub.readResource(req.params.uri);
+  });
+}
+
 // Start each server once to (re)build its cache, then stop it.
 export async function refresh(names, out = console.log) {
   ensureHome();
@@ -310,26 +372,13 @@ export async function refresh(names, out = console.log) {
   return failed;
 }
 
-export async function serve() {
+// Everything in this process: no daemon, and nothing outlives the session.
+export async function serveLocal() {
   ensureHome();
-  const hub = new Hub();
-  const server = new Server(
-    { name: "mcp-ondemand", version: VERSION },
-    { capabilities: { tools: { listChanged: true }, prompts: { listChanged: true }, resources: { listChanged: true } }, instructions: hub.instructions() },
-  );
-  hub.onChanged = () => {
-    for (const send of ["sendToolListChanged", "sendPromptListChanged", "sendResourceListChanged"]) server[send]().catch(() => {});
-  };
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: hub.tools }));
-  server.setRequestHandler(CallToolRequestSchema, async (req, extra) =>
-    hub.callTool(req.params.name, req.params.arguments, { signal: extra.signal, sendNotification: extra.sendNotification, progressToken: req.params._meta?.progressToken }),
-  );
-  server.setRequestHandler(ListPromptsRequestSchema, async () => ({ prompts: hub.prompts }));
-  server.setRequestHandler(GetPromptRequestSchema, async (req) => hub.getPrompt(req.params.name, req.params.arguments));
-  server.setRequestHandler(ListResourcesRequestSchema, async () => ({ resources: hub.resources }));
-  server.setRequestHandler(ListResourceTemplatesRequestSchema, async () => ({ resourceTemplates: hub.templates }));
-  server.setRequestHandler(ReadResourceRequestSchema, async (req) => hub.readResource(req.params.uri));
-  // Nothing outlives the session.
+  const hub = new Hub(loadServers(), { cwd: process.cwd() });
+  const server = new Server({ name: "mcp-ondemand", version: VERSION }, { capabilities: CAPABILITIES, instructions: instructionsOf([hub]) });
+  hub.onChanged = () => notifyChanged(server);
+  bind(server, [hub]);
   let ending = false;
   const shutdown = async () => {
     if (ending) return;
@@ -341,10 +390,6 @@ export async function serve() {
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
   await server.connect(new StdioServerTransport());
-  log("ready", hub.tools.length, "tools");
-  // Without a cache a server is started once in the background to learn what it offers. Preload servers stay up.
-  for (const [name, def] of Object.entries(hub.servers)) {
-    if (def.preload) hub.start(name).catch(() => {});
-    else if (!hub.cache(name)) hub.start(name).then(() => hub.stop(name, "cache built"), () => {});
-  }
+  log("ready (local)", hub.tools.length, "tools");
+  hub.warmup();
 }

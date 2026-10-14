@@ -26,7 +26,8 @@ Install mcp-ondemand (https://github.com/elis132/mcp-ondemand) so my local MCP s
    node ~/mcp-ondemand/bin/mcp-ondemand.mjs import --plugins --dry-run
    Ask me which to move. Then run it with --only <the ones I picked> (without --dry-run). It switches those
    plugins off, backs up the settings, and builds their caches. Servers that keep state between calls (a browser,
-   for example) should get "idle": 1800 or more in ~/.mcp-ondemand/servers.json.
+   for example) should get "idle": 1800 or more and "perSession": true in ~/.mcp-ondemand/servers.json, so each
+   session has its own copy instead of sharing one.
    Finally run: node ~/mcp-ondemand/bin/mcp-ondemand.mjs doctor, and fix what it reports.
 8. Tell me: tools are now named mcp__ondemand__<server>__<tool>, the first call to a stopped server takes a few
    seconds, I need to restart Claude Code, and `node ~/mcp-ondemand/bin/mcp-ondemand.mjs restore` undoes everything.
