@@ -70,6 +70,19 @@ test("servers start on first use, stop when idle, and never outlive the session"
   }
 });
 
+test("Codex sessions use the same MCP protocol and retain imported tool timeouts", async () => {
+  const f = setup({ toolTimeout: 100 }, { MCP_ONDEMAND_CLIENT: "codex" });
+  const client = await f.warm();
+  try {
+    const r = await client.callTool({ name: "fake__slow", arguments: { ms: 3000 } });
+    assert.equal(r.isError, true);
+    assert.match(text(r), /timed out/i);
+    assert.equal(text(await client.callTool({ name: "fake__echo", arguments: { text: "codex" } })), "echo:codex");
+  } finally {
+    await client.close();
+  }
+});
+
 async function lifecycle(f, client) {
   // Warm cache: tools and instructions come from the cache, nothing is started.
   const names = (await client.listTools()).tools.map((t) => t.name).sort();

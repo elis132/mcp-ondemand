@@ -4,7 +4,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-export const VERSION = "1.4.1";
+export const VERSION = "1.5.0";
 // A fingerprint of the code itself. Sessions and daemon compare it, so any change to the code (an update, a
 // git pull, a local edit) replaces a running daemon, not only a new version number.
 const SRC = dirname(fileURLToPath(import.meta.url));

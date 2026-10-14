@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.5.0 (2026-10-15)
+
+- Codex support: `--client codex` imports servers from `~/.codex/config.toml` (or a project's `.codex/config.toml`)
+  by setting `enabled = false` on them and adding the `ondemand` table, keeping the rest of the TOML text as is.
+  An edit that would change anything else is refused before writing. `restore --client codex` undoes it.
+- The client is detected from the session (Claude Code or Codex) or from which config exists; ambiguous cases ask
+  for `--client`. Claude and Codex keep separate data folders: `~/.mcp-ondemand` and `~/.mcp-ondemand-codex`.
+- Codex's `startup_timeout_sec` and `tool_timeout_sec` carry over. Codex-native runtimes, remote and disabled
+  servers, and entries with settings mcp-ondemand cannot honour stay in Codex's own config.
+
 ## 1.4.1 (2026-10-14)
 
 - Published on npm as `@elis132/mcp-ondemand` (`npm install -g @elis132/mcp-ondemand`; the command is still

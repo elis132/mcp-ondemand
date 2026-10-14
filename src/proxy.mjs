@@ -163,7 +163,7 @@ export class Hub {
       client.setNotificationHandler(ToolListChangedNotificationSchema, resync);
       client.setNotificationHandler(PromptListChangedNotificationSchema, resync);
       client.setNotificationHandler(ResourceListChangedNotificationSchema, resync);
-      await client.connect(transport, { timeout: START_TIMEOUT });
+      await client.connect(transport, { timeout: def.startupTimeout ?? START_TIMEOUT });
       Object.assign(entry, { client, pid: transport.pid, lastUsed: Date.now() });
       Object.assign(this.stat(name), { failures: 0, retryAt: 0 });
       this.stat(name).starts++;
@@ -275,7 +275,7 @@ export class Hub {
     try {
       return await this.use(target.server, (client) =>
         client.callTool({ name: target.name, arguments: args ?? {} }, undefined, {
-          timeout: CALL_TIMEOUT,
+          timeout: this.servers[target.server].toolTimeout ?? CALL_TIMEOUT,
           resetTimeoutOnProgress: true,
           signal: extra.signal,
           onprogress: token === undefined ? undefined : (p) => extra.sendNotification?.({ method: "notifications/progress", params: { ...p, progressToken: token } }).catch(() => {}),

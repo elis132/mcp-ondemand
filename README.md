@@ -1,6 +1,6 @@
 # mcp-ondemand
 
-**Your MCP servers, running only while they are used.** One small proxy shows Claude every tool, starts a server
+**Your MCP servers, running only while they are used.** For Claude Code and Codex. One small proxy shows your client every tool, starts a server
 on its first call, shares it between all your open sessions, and stops it when it goes idle.
 
 [![test](https://github.com/elis132/mcp-ondemand/actions/workflows/test.yml/badge.svg)](https://github.com/elis132/mcp-ondemand/actions/workflows/test.yml)
@@ -72,7 +72,29 @@ npm install -g @elis132/mcp-ondemand
 mcp-ondemand import
 ```
 
-`import` moves the local (stdio) MCP servers from your user-level Claude Code config (`~/.claude.json`) behind
+`import` detects Claude Code or Codex from the active session. From a plain terminal with both installed, choose
+explicitly:
+
+```bash
+mcp-ondemand import --client claude
+mcp-ondemand import --client codex
+```
+
+Claude Code uses `~/.claude.json`. Codex uses `$CODEX_HOME/config.toml` (normally `~/.codex/config.toml`), or
+`<project>/.codex/config.toml` with `--project`. Codex import preserves the TOML text and original server
+settings, disables the imported entries, and registers the proxy; `restore --client codex` re-enables them
+without overwriting unrelated settings changed since import. Native `node_repl`/`cua_repl`, disabled entries,
+remote servers, and entries with unsupported fields (including tool allowlists and `env_vars`) stay in place.
+Codex servers default to `perSession: true` and `idle: 1800` to preserve project folders and isolate state;
+set `perSession: false` for servers you want to share across Codex sessions. Startup and tool timeouts are retained.
+
+The two clients have separate server lists and daemons by default: `~/.mcp-ondemand/` for Claude Code and
+`~/.mcp-ondemand-codex/` for Codex. `--client claude|codex` works with `import`, `restore`, `doctor`, `status`,
+`refresh` and `stop`; `MCP_ONDEMAND_CLIENT` overrides detection, and `MCP_ONDEMAND_HOME` overrides the data folder.
+Both client configs are never automatically merged. Codex plugin-managed servers are left alone;
+`--plugins` is currently Claude Code only.
+
+For Claude Code, `import` moves the local (stdio) MCP servers from your user-level config behind
 mcp-ondemand, puts one `ondemand` server in their place, backs up the old config, and starts each server once to
 build its tool cache. Remote (HTTP/SSE) servers have no local process and are left where they are.
 
@@ -82,8 +104,8 @@ Servers that come from Claude Code plugins (Playwright, for example) are moved s
 mcp-ondemand import --plugins
 ```
 
-That switches those plugins off, so they stop starting their own copy. Restart Claude Code. `claude mcp list` should
-show `ondemand` as connected, and `mcp-ondemand doctor` checks the whole setup.
+That switches those plugins off, so they stop starting their own copy. Restart your client. `claude mcp list`
+or `codex mcp list` should show `ondemand`, and `mcp-ondemand doctor --client claude` (or `codex`) checks the setup.
 
 Update with `npm update -g @elis132/mcp-ondemand`: the running daemon notices the new code and hands over by itself.
 
@@ -104,7 +126,7 @@ the folder.
 
 ## Use
 
-Tools are named `<server>__<tool>`, so in Claude Code they appear as `mcp__ondemand__github__create_issue`.
+Tools are named `<server>__<tool>`, so they appear as `mcp__ondemand__github__create_issue` in clients using MCP prefixes.
 Two tools of its own:
 
 | Tool | Does |
@@ -118,7 +140,7 @@ resources keep their own URIs.
 ## Commands
 
 ```bash
-mcp-ondemand import [--project <dir>] [--only a,b] [--except a,b] [--dry-run]
+mcp-ondemand import [--client claude|codex] [--project <dir>] [--only a,b] [--except a,b] [--dry-run]
 mcp-ondemand import --plugins [--only a,b] [--dry-run]   # servers from Claude Code plugins
 mcp-ondemand refresh [name]        # start servers once to rebuild their cache
 mcp-ondemand status                # what runs now, with memory (asks the daemon), or the configured servers
@@ -131,8 +153,8 @@ mcp-ondemand restore [--only a,b]  # put servers back where they came from
 
 ## Configure
 
-Everything lives in `~/.mcp-ondemand/` (set `MCP_ONDEMAND_HOME` to move it): `servers.json`, the tool `cache/`,
-`backups/` of your Claude config, and `ondemand.log`.
+Everything lives in the selected client's data folder (`~/.mcp-ondemand/` or `~/.mcp-ondemand-codex/`; set
+`MCP_ONDEMAND_HOME` to move it): `servers.json`, the tool `cache/`, config `backups/`, and `ondemand.log`.
 
 `servers.json` uses the same shape as Claude Code's `mcpServers`, plus a few optional fields:
 
