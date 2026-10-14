@@ -11,7 +11,9 @@ const flag = (name) => {
   if (!rest[i + 1] || rest[i + 1].startsWith("--")) throw new Error(`--${name} requires a value`);
   return rest[i + 1];
 };
-const management = ["import", "restore", "doctor", "refresh", "status", "stop", "bench"].includes(cmd);
+// import, restore and doctor edit or read a client's config. The others only need the data folder, so an explicit
+// MCP_ONDEMAND_HOME is enough for them.
+const management = ["import", "restore", "doctor"].includes(cmd) || (["refresh", "status", "stop", "bench"].includes(cmd) && !process.env.MCP_ONDEMAND_HOME);
 let client = "claude";
 try {
   if (management || flag("client") || process.env.MCP_ONDEMAND_CLIENT) client = detectClient({ client: flag("client") });
