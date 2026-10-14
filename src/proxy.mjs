@@ -220,10 +220,12 @@ export class Hub {
     }
   }
 
-  status() {
-    const table = this.live.size ? processTable() : [];
+  async status() {
+    // What is running right now, before the slow memory read: a server may stop while it runs.
+    const snapshot = new Map(this.live);
+    const table = snapshot.size ? await processTable() : [];
     return Object.keys(this.servers).map((name) => {
-      const s = this.live.get(name);
+      const s = snapshot.get(name);
       const st = this.stat(name);
       const c = this.cache(name);
       const state = s
@@ -236,7 +238,7 @@ export class Hub {
   // extra: the SDK's request context. Its signal cancels the call on the real server too, and progress from the
   // real server is passed on when the client asked for it.
   async callTool(id, args, extra = {}) {
-    if (id === "ondemand_status") return text(this.status().join("\n"));
+    if (id === "ondemand_status") return text((await this.status()).join("\n"));
     if (id === "ondemand_restart") {
       await this.stop(args?.server, "restart requested");
       return text(`${args?.server} stopped. It starts again on its next call.`);

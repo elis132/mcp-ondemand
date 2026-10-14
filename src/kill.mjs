@@ -1,20 +1,20 @@
 // Process trees: stop a server with everything it started, and measure what it uses. Launchers such as npx, uvx,
 // cmd and wsl run the real server as a child of their own, so the direct child alone says little.
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 
-// Every process with its parent and resident memory in bytes.
+const WIN_TABLE = ["-NoProfile", "-Command", "Get-CimInstance Win32_Process | ForEach-Object { \"$($_.ProcessId) $($_.ParentProcessId) $($_.WorkingSetSize)\" }"];
+
+// Every process with its parent and resident memory in bytes. Asynchronous: on Windows this takes seconds, and
+// the proxy must keep serving calls meanwhile.
 export function processTable() {
-  if (process.platform === "win32") {
-    const out = spawnSync(
-      "powershell",
-      ["-NoProfile", "-Command", "Get-CimInstance Win32_Process | ForEach-Object { \"$($_.ProcessId) $($_.ParentProcessId) $($_.WorkingSetSize)\" }"],
-      { encoding: "utf8", windowsHide: true },
-    ).stdout ?? "";
-    return parse(out, 1);
-  }
-  const out = spawnSync("ps", ["-A", "-o", "pid=,ppid=,rss="], { encoding: "utf8" }).stdout ?? "";
-  return parse(out, 1024);
+  const [cmd, args, unit] = process.platform === "win32" ? ["powershell", WIN_TABLE, 1] : ["ps", ["-A", "-o", "pid=,ppid=,rss="], 1024];
+  return new Promise((resolve) =>
+    execFile(cmd, args, { encoding: "utf8", windowsHide: true, maxBuffer: 16 * 1024 * 1024 }, (_err, out) => resolve(parse(out ?? "", unit))),
+  );
 }
+
+// Only for stopping on Linux and macOS, where ps is fast and the parent must be found before it dies.
+const processTableSync = () => parse(spawnSync("ps", ["-A", "-o", "pid=,ppid=,rss="], { encoding: "utf8" }).stdout ?? "", 1024);
 
 function parse(out, unit) {
   return out
@@ -24,7 +24,7 @@ function parse(out, unit) {
     .map(([pid, ppid, rss]) => ({ pid, ppid, bytes: (rss || 0) * unit }));
 }
 
-export function tree(root, table = processTable()) {
+export function tree(root, table) {
   const children = new Map();
   for (const p of table) {
     if (!children.has(p.ppid)) children.set(p.ppid, []);
@@ -45,7 +45,7 @@ export function killTree(pid) {
     return;
   }
   // Children first, collected before the parent dies and they are re-parented.
-  for (const p of tree(pid).reverse()) {
+  for (const p of tree(pid, processTableSync()).reverse()) {
     try {
       process.kill(p.pid, "SIGKILL");
     } catch {}

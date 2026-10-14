@@ -62,7 +62,14 @@ function setup(extra = {}, env = {}) {
 test("servers start on first use, stop when idle, and never outlive the session", async () => {
   const f = setup();
   const client = await f.warm();
+  try {
+    await lifecycle(f, client);
+  } finally {
+    await client.close();
+  }
+});
 
+async function lifecycle(f, client) {
   // Warm cache: tools and instructions come from the cache, nothing is started.
   const names = (await client.listTools()).tools.map((t) => t.name).sort();
   assert.deepEqual(names, ["fake__crash", "fake__echo", "fake__env", "fake__progress", "fake__slow", "ondemand_restart", "ondemand_status"]);
@@ -78,12 +85,12 @@ test("servers start on first use, stop when idle, and never outlive the session"
   assert.deepEqual([text(a), text(b)], ["echo:a", "echo:b"]);
   assert.equal(f.starts(), 2);
 
-  // Status shows it running, with its memory.
-  assert.match(text(await client.callTool({ name: "ondemand_status", arguments: {} })), /fake: running, pid \d+, \d+ MB/);
-
   // A call longer than the idle time is not cut off.
   assert.equal(text(await client.callTool({ name: "fake__slow", arguments: { ms: 3000 } })), "done");
   assert.equal(f.starts(), 2);
+
+  // Status shows it running, with its memory.
+  assert.match(text(await client.callTool({ name: "ondemand_status", arguments: {} })), /fake: running, pid \d+, \d+ MB/);
 
   // Idle for 2 s: stopped. The next call starts it again.
   assert.ok(await until(() => !alive(f.pid(1))), "idle server stopped");
@@ -106,7 +113,7 @@ test("servers start on first use, stop when idle, and never outlive the session"
   assert.ok(alive(last));
   await client.close();
   assert.ok(await until(() => !alive(last)), "server killed when the session ended");
-});
+}
 
 test("prompts, resources, progress, cancellation and ${VAR} reach the real server", async () => {
   const f = setup({ env: { FAKE_LOG: "${FAKE_LOG_PATH}", SECRET: "${ONDEMAND_TEST_SECRET:-fallback}" } }, {});
