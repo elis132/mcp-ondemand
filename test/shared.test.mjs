@@ -1,6 +1,6 @@
 // Shared mode: two sessions, one daemon. Shared servers run once, perSession servers once per session.
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -38,8 +38,15 @@ const alive = (p) => {
 const starts = (file) => (existsSync(file) ? readFileSync(file, "utf8").trim().split("\n").filter((l) => l.startsWith("start")).map((l) => Number(l.split(" ")[1])) : []);
 const text = (r) => r.content[0].text;
 const daemonPid = () => (existsSync(join(home, "daemon.pid")) ? Number(readFileSync(join(home, "daemon.pid"), "utf8")) : null);
-// Windows may hand out paths with a long-path prefix (\\?\C:\...); compare without it.
-const norm = (p) => p.replaceAll("\\", "/").replace(/^\/\/\?\//, "").toLowerCase();
+// Compare real locations: Windows may add a long-path prefix (\\?\C:\...), macOS links /var to /private/var.
+const norm = (p) => {
+  const plain = p.replace(/^\\\\\?\\/, "");
+  let real = plain;
+  try {
+    real = realpathSync.native(plain);
+  } catch {}
+  return real.replaceAll("\\", "/").toLowerCase();
+};
 
 async function session(cwd) {
   const transport = new StdioClientTransport({
@@ -99,6 +106,19 @@ test("sessions share servers through one daemon, which leaves when they are gone
     assert.ok(await until(() => !alive(ownA)), "a's perSession server stopped with a");
     assert.ok(alive(ownB));
     assert.equal(text(await b.callTool({ name: "shared__echo", arguments: { text: "c" } })), "echo:c");
+
+    // Sessions that hang up hard, mid-handshake, do not bring the daemon down.
+    await Promise.all(Array.from({ length: 10 }, () => new Promise((resolve) => {
+      const s = net.connect(SOCKET, () => {
+        s.write(`${JSON.stringify({ ondemand: { version: "0.0.0-rude" } }).slice(0, 10)}`);
+        s.destroy();
+        resolve();
+      });
+      s.on("error", resolve);
+    })));
+    await sleep(500);
+    assert.ok(alive(daemon), "daemon survived hard disconnects");
+    assert.equal(text(await b.callTool({ name: "shared__echo", arguments: { text: "d" } })), "echo:d");
 
     // A session of another version is turned away, and this daemon stops taking new sessions.
     assert.match(await hello("0.0.0-other"), /"restart"/);

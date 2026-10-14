@@ -69,10 +69,14 @@ export async function runDaemon() {
   };
   shared.onChanged = changed;
 
-  const listener = net.createServer((socket) => accept(socket).catch((err) => {
-    log("session refused", err.message);
-    socket.destroy();
-  }));
+  const listener = net.createServer((socket) => {
+    // For the socket's whole life: a session that drops hard (ECONNRESET, EPIPE) must not become an uncaught error.
+    socket.on("error", (err) => log("session socket:", err.code ?? err.message));
+    accept(socket).catch((err) => {
+      log("session refused:", err.message);
+      socket.destroy();
+    });
+  });
 
   async function accept(socket) {
     const { message: hello, rest } = await readLine(socket);
@@ -117,21 +121,35 @@ export async function runDaemon() {
   warm.onChanged = changed;
   warm.warmup({ preload: false });
 
-  const exit = async (why) => {
-    log("daemon exiting:", why);
-    listener.close();
-    await shared.stopAll(why);
+  // However the process ends (a clean exit, a signal, a fatal error), no server it started is left behind and the
+  // pid file goes. Synchronous: nothing asynchronous runs during "exit".
+  process.on("exit", () => {
+    for (const hub of [shared, warm, ...[...sessions].map((s) => s.own)]) for (const s of hub.live.values()) killTree(s.pid);
     try {
       if (readFileSync(PIDFILE, "utf8") === String(process.pid)) unlinkSync(PIDFILE);
     } catch {}
+  });
+  // One misbehaving session or server must not take down every other session: log and carry on.
+  process.on("uncaughtException", (err) => log("uncaught:", err?.stack ?? err));
+  process.on("unhandledRejection", (err) => log("unhandled rejection:", err?.stack ?? err));
+
+  let exiting = false;
+  const exit = async (why) => {
+    if (exiting) return;
+    exiting = true;
+    log("daemon exiting:", why);
+    if (listener.listening) listener.close();
+    await Promise.all([shared, warm, ...[...sessions].map((s) => s.own)].map((h) => h.stopAll(why)));
     process.exit(0);
   };
   process.on("SIGINT", () => exit("SIGINT"));
   process.on("SIGTERM", () => exit("SIGTERM"));
+  // Not unref'd: this timer is what ends the daemon. Once draining has closed the listener and the last session
+  // is gone, nothing else keeps the process alive, and it would end without cleaning up.
   setInterval(() => {
-    if (sessions.size || shared.live.size) quietSince = Date.now();
+    if (sessions.size || shared.live.size || warm.live.size) quietSince = Date.now();
     else if (draining || Date.now() - quietSince >= LINGER) exit(draining ? "replaced by a newer version" : "no sessions");
-  }, Math.min(5000, Math.max(250, LINGER / 4))).unref?.();
+  }, Math.min(5000, Math.max(250, LINGER / 4)));
 }
 
 async function listen(listener) {
