@@ -8,8 +8,8 @@ Paste this into Claude Code (or Codex, or any coding agent with a shell) to have
 Install mcp-ondemand (https://github.com/elis132/mcp-ondemand) so my local MCP servers only run while they are used.
 
 1. Check that Node.js 20 or newer is installed (`node --version`). If not, stop and tell me.
-2. Install it: npm install -g mcp-ondemand
-   (Already installed? npm update -g mcp-ondemand.) Check with: mcp-ondemand --version
+2. Install it: npm install -g @elis132/mcp-ondemand
+   (Already installed? npm update -g @elis132/mcp-ondemand.) Check with: mcp-ondemand --version
 3. Show me what would move, without changing anything:
    mcp-ondemand import --dry-run
    List the servers it would move and the ones it would leave, and ask me before going on.

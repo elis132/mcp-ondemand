@@ -1,6 +1,6 @@
 {
-  "name": "mcp-ondemand",
-  "version": "1.4.0",
+  "name": "@elis132/mcp-ondemand",
+  "version": "1.4.1",
   "description": "Run MCP servers only while they are used: one proxy lists every tool from cache, starts each server on its first call, shares it between sessions and stops it when idle.",
   "type": "module",
   "bin": {
@@ -41,5 +41,8 @@
   "bugs": {
     "url": "https://github.com/elis132/mcp-ondemand/issues"
   },
-  "author": "elis132"
+  "author": "elis132",
+  "publishConfig": {
+    "access": "public"
+  }
 }

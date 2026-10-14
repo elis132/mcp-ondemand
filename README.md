@@ -68,7 +68,7 @@ Claude session 3 ─┘     daemon           └── ...          (stopped)
 Needs Node.js 20 or newer.
 
 ```bash
-npm install -g mcp-ondemand
+npm install -g @elis132/mcp-ondemand
 mcp-ondemand import
 ```
 
@@ -85,7 +85,7 @@ mcp-ondemand import --plugins
 That switches those plugins off, so they stop starting their own copy. Restart Claude Code. `claude mcp list` should
 show `ondemand` as connected, and `mcp-ondemand doctor` checks the whole setup.
 
-Update with `npm update -g mcp-ondemand`: the running daemon notices the new code and hands over by itself.
+Update with `npm update -g @elis132/mcp-ondemand`: the running daemon notices the new code and hands over by itself.
 
 **Or let your agent do it:** paste [SETUP_PROMPT.md](SETUP_PROMPT.md) into Claude Code, Codex or similar.
 
@@ -228,6 +228,7 @@ once in the background the next time a session opens.
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | **mcp-ondemand** | real tools | yes | yes | yes | yes, or per session | yes | yes | yes |
 | [mcp-snooze](https://github.com/askmegit/mcp-snooze) | real tools | yes | yes | yes (Windows untested) | no | yes | passes through | no |
+| [mcp-on-demand](https://github.com/mfagerlund/mcp-on-demand) | none: a CLI/HTTP API Claude calls | yes, started by hand | no, stopped by hand | not documented | not documented | no | no | no |
 | [voicetreelab/lazy-mcp](https://github.com/voicetreelab/lazy-mcp) | 2 meta-tools | yes | no | no | no | no | no | no |
 | [mcp-lazy-load](https://github.com/petercha90/mcp-lazy-load), [mcp-lazy-proxy](https://github.com/sarthakpranesh/mcp-lazy-proxy) | meta-tools | yes | varies | no | no | no | no | no |
 

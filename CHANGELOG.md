@@ -1,10 +1,14 @@
 # Changelog
 
+## 1.4.1 (2026-10-14)
+
+- Published on npm as `@elis132/mcp-ondemand` (`npm install -g @elis132/mcp-ondemand`; the command is still
+  `mcp-ondemand`). npm does not allow the unscoped name, being too close to `mcp-on-demand`.
+
 ## 1.4.0 (2026-10-14)
 
 - A session's pipe to the daemon no longer loads the MCP SDK: 49 MB per open session instead of 65.
 - `mcp-ondemand bench` measures what your servers cost and what mcp-ondemand saves.
-- Published on npm: `npm install -g mcp-ondemand`.
 
 ## 1.3.0 (2026-10-14)
 
