@@ -171,3 +171,71 @@ test("an unset ${VAR} without fallback is reported by name", async () => {
   assert.match(text(r), /ONDEMAND_TEST_UNSET_VAR is not set/);
   await client.close();
 });
+
+// Write a cache by hand, so a server's tools are listed without starting it.
+async function seedCache(home, name) {
+  const { keyOf } = await import("../src/config.mjs");
+  const { mkdirSync } = await import("node:fs");
+  const server = JSON.parse(readFileSync(join(home, "servers.json"), "utf8"))[name];
+  mkdirSync(join(home, "cache"), { recursive: true });
+  writeFileSync(join(home, "cache", `${name}.json`), JSON.stringify({ key: keyOf(server), at: "now", tools: [{ name: "echo", inputSchema: { type: "object" } }] }));
+}
+
+test("a server that will not start is retried with backoff, not on every call", async () => {
+  const f = setup({ env: { FAKE_LOG: "", FAKE_FAIL: "1" } });
+  const servers = JSON.parse(readFileSync(join(f.home, "servers.json"), "utf8"));
+  servers.fake.env.FAKE_LOG = join(f.home, "fake.log");
+  writeFileSync(join(f.home, "servers.json"), JSON.stringify(servers));
+  await seedCache(f.home, "fake");
+  const client = await f.connect();
+  try {
+    const first = await client.callTool({ name: "fake__echo", arguments: { text: "x" } });
+    assert.equal(first.isError, true);
+    assert.equal(f.starts(), 1);
+    const second = await client.callTool({ name: "fake__echo", arguments: { text: "x" } });
+    assert.match(text(second), /failed to start 1 time\(s\); next try in \d+s/);
+    assert.equal(f.starts(), 1, "no new attempt during the backoff");
+    // ondemand_restart retries at once.
+    await client.callTool({ name: "ondemand_restart", arguments: { server: "fake" } });
+    await client.callTool({ name: "fake__echo", arguments: { text: "x" } });
+    assert.equal(f.starts(), 2);
+  } finally {
+    await client.close();
+  }
+});
+
+test("memory limits: a server over maxMemory, or over the shared budget, is stopped", async () => {
+  for (const [label, extra, settings] of [["maxMemory", { maxMemory: 1 }, null], ["memoryBudget", {}, { memoryBudget: 1 }]]) {
+    const f = setup({ idle: 600, ...extra }, { MCP_ONDEMAND_WATCHDOG: "1" });
+    if (settings) writeFileSync(join(f.home, "settings.json"), JSON.stringify(settings));
+    const client = await f.warm();
+    try {
+      await client.callTool({ name: "fake__echo", arguments: { text: "x" } });
+      const p = f.pid(1);
+      assert.ok(await until(() => !alive(p), 20000), `${label}: stopped though not idle`);
+      assert.match(readFileSync(join(f.home, "ondemand.log"), "utf8"), label === "maxMemory" ? /over its limit of 1 MB/ : /memory budget/);
+    } finally {
+      await client.close();
+    }
+  }
+});
+
+test("a server added to servers.json shows up in an open session", async () => {
+  const f = setup();
+  const client = await f.warm();
+  try {
+    let notified = false;
+    const { ToolListChangedNotificationSchema } = await import("@modelcontextprotocol/sdk/types.js");
+    client.setNotificationHandler(ToolListChangedNotificationSchema, () => {
+      notified = true;
+    });
+    const servers = JSON.parse(readFileSync(join(f.home, "servers.json"), "utf8"));
+    servers.extra = { ...servers.fake };
+    writeFileSync(join(f.home, "servers.json"), JSON.stringify(servers));
+    await seedCache(f.home, "extra");
+    assert.ok(await until(() => notified), "client told the tools changed");
+    assert.ok((await client.listTools()).tools.some((t) => t.name === "extra__echo"));
+  } finally {
+    await client.close();
+  }
+});

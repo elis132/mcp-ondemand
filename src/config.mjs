@@ -1,6 +1,6 @@
 // Where mcp-ondemand keeps its files, and the per-server cache.
 import { createHash } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, watch, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -9,7 +9,17 @@ export const SERVERS = join(HOME, "servers.json");
 export const CACHE = join(HOME, "cache");
 export const BACKUPS = join(HOME, "backups");
 export const LOG = join(HOME, "ondemand.log");
+export const SETTINGS = join(HOME, "settings.json");
 export const DEFAULT_IDLE = 600;
+
+// Settings for all servers together: { "memoryBudget": MB, "idle": seconds }. Missing or unreadable: none.
+export function loadSettings() {
+  try {
+    return JSON.parse(readFileSync(SETTINGS, "utf8"));
+  } catch {
+    return {};
+  }
+}
 
 export function ensureHome() {
   mkdirSync(CACHE, { recursive: true });
@@ -70,6 +80,28 @@ export function readCache(name, server) {
 
 export function writeCache(name, server, data) {
   writeFileSync(cacheFile(name), JSON.stringify({ key: keyOf(server), at: new Date().toISOString(), ...data }));
+}
+
+// Calls onChange (debounced) when servers.json changes or a cache is written, by this process or another
+// (mcp-ondemand refresh). Watching can fail on some file systems; then changes apply to the next session only.
+export function watchFiles(onChange) {
+  let timer;
+  const fire = () => {
+    clearTimeout(timer);
+    timer = setTimeout(onChange, 300);
+  };
+  const watchers = [];
+  try {
+    watchers.push(watch(HOME, (_, file) => (file === "servers.json" || file === "settings.json") && fire()));
+    watchers.push(watch(CACHE, fire));
+  } catch (err) {
+    log("cannot watch files:", err?.message ?? err);
+  }
+  for (const w of watchers) {
+    w.on("error", () => {});
+    w.unref?.();
+  }
+  return () => watchers.forEach((w) => w.close());
 }
 
 export const dropCache = (name) => {

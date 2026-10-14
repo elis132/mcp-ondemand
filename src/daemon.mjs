@@ -5,10 +5,12 @@ import { existsSync, readFileSync, statSync, unlinkSync, writeFileSync } from "n
 import net from "node:net";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { ensureHome, HOME, loadServers, log, SERVERS } from "./config.mjs";
+import { ensureHome, HOME, loadServers, log, SERVERS, watchFiles } from "./config.mjs";
 import { killTree } from "./kill.mjs";
-import { bind, CAPABILITIES, Hub, instructionsOf, notifyChanged, serveLocal, VERSION } from "./proxy.mjs";
+import { bind, BUILD, CAPABILITIES, Hub, instructionsOf, notifyChanged, serveLocal, signature, VERSION } from "./proxy.mjs";
+import { watchdog } from "./watchdog.mjs";
 import { SOCKET, SocketTransport } from "./socket.mjs";
 
 const BIN = fileURLToPath(new URL("../bin/mcp-ondemand.mjs", import.meta.url));
@@ -63,9 +65,19 @@ export async function runDaemon() {
   const changed = () => {
     shared.rebuild();
     for (const s of sessions) {
+      const before = s.seen;
       s.own.rebuild();
-      notifyChanged(s.server);
+      s.seen = signature([shared, s.own]);
+      if (s.seen !== before) notifyChanged(s.server);
     }
+  };
+  // servers.json edited, or caches rebuilt by "mcp-ondemand refresh": open sessions see it now, not next time.
+  const reloadConfig = async () => {
+    seen = mtime();
+    servers = loadServers();
+    await shared.reload(pick(servers, false));
+    for (const s of sessions) await s.own.reload(pick(servers, true));
+    changed();
   };
   shared.onChanged = changed;
 
@@ -81,27 +93,25 @@ export async function runDaemon() {
   async function accept(socket) {
     const { message: hello, rest } = await readLine(socket);
     // A proxy of another version: let it start a daemon of its own version, and leave once our sessions end.
-    if (hello?.version !== VERSION) {
+    if (hello?.version !== VERSION || hello?.build !== BUILD) {
       socket.end(line("restart"));
       if (!draining) {
         draining = true;
         listener.close();
-        log("draining: a session runs version", hello?.version);
+        log("draining: a session runs version", hello?.version, "build", hello?.build);
       }
       return;
     }
     // servers.json changed since the last session: changed servers are stopped, the rest keep running.
     if (mtime() !== seen) {
-      seen = mtime();
-      servers = loadServers();
-      await shared.reload(pick(servers, false));
+      await reloadConfig();
       log("config reloaded");
     } else shared.rebuild(); // caches rebuilt by "refresh" in the meantime
     const own = new Hub(pick(servers, true), { cwd: hello.cwd });
     const server = new Server({ name: "mcp-ondemand", version: VERSION }, { capabilities: CAPABILITIES, instructions: instructionsOf([shared, own]) });
     own.onChanged = changed;
     bind(server, [shared, own]);
-    const session = { server, own };
+    const session = { server, own, seen: signature([shared, own]) };
     sessions.add(session);
     server.onclose = () => {
       sessions.delete(session);
@@ -115,11 +125,13 @@ export async function runDaemon() {
 
   await listen(listener);
   writeFileSync(PIDFILE, String(process.pid));
-  log("daemon ready, pid", process.pid, "version", VERSION);
+  log("daemon ready, pid", process.pid, "version", VERSION, "build", BUILD);
   shared.warmup();
   const warm = new Hub(pick(servers, true));
   warm.onChanged = changed;
   warm.warmup({ preload: false });
+  watchdog(() => [shared, warm, ...[...sessions].map((s) => s.own)]);
+  watchFiles(() => reloadConfig().catch((err) => log("reload failed:", err?.message ?? err)));
 
   // However the process ends (a clean exit, a signal, a fatal error), no server it started is left behind and the
   // pid file goes. Synchronous: nothing asynchronous runs during "exit".
@@ -209,7 +221,7 @@ async function session() {
       }
     }
     if (!socket) return null;
-    socket.write(line({ version: VERSION, cwd: process.cwd() }));
+    socket.write(line({ version: VERSION, build: BUILD, cwd: process.cwd() }));
     const reply = await readLine(socket).catch(() => null);
     if (reply?.message === "ok") return { socket, rest: reply.rest };
     // An older daemon is stepping aside; the next round starts ours.
@@ -233,6 +245,25 @@ export async function serve() {
   process.stdin.on("end", () => socket.end());
   socket.on("close", () => process.exit(0));
   socket.on("error", () => process.exit(1));
+}
+
+// Ask the running daemon what runs, as a short session of its own. Null when no daemon answers.
+export async function liveStatus() {
+  const socket = await connect().catch(() => null);
+  if (!socket) return null;
+  try {
+    socket.write(line({ version: VERSION, build: BUILD, cwd: process.cwd() }));
+    const reply = await readLine(socket);
+    if (reply.message !== "ok") return null;
+    const client = new Client({ name: "mcp-ondemand-status", version: VERSION });
+    await client.connect(new SocketTransport(socket, reply.rest));
+    const result = await client.callTool({ name: "ondemand_status", arguments: {} });
+    await client.close();
+    return result.content[0].text.split("\n").filter((l) => !l.endsWith("(this session)"));
+  } catch {
+    socket.destroy();
+    return null;
+  }
 }
 
 // Running daemon's pid, if any.

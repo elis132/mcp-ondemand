@@ -20,6 +20,9 @@ mcp-ondemand is one small MCP server that sits in front of all the others:
 - **Prompts and resources pass through too**, and so do progress reports and cancellation: press Esc and the call
   stops on the real server, not just in Claude.
 - **Plugin MCP servers too:** `import --plugins` moves the servers of your Claude Code plugins behind it.
+- **Memory limits, if you want them:** restart a server that grows past its own limit, or keep all servers together
+  under a budget by stopping the least recently used idle ones.
+- **Changes apply at once:** edit `servers.json` or run `refresh`, and open sessions see the new tools without a restart.
 
 ```
 Claude session 1 ─┐                      ┌── github       (running, shared)
@@ -71,7 +74,7 @@ resources keep their own URIs.
 mcp-ondemand import [--project <dir>] [--only a,b] [--except a,b] [--dry-run]
 mcp-ondemand import --plugins [--only a,b] [--dry-run]   # servers from Claude Code plugins
 mcp-ondemand refresh [name]        # start servers once to rebuild their cache
-mcp-ondemand status                # configured servers and their cache
+mcp-ondemand status                # what runs now, with memory (asks the daemon), or the configured servers
 mcp-ondemand doctor                # check the setup and say what to fix
 mcp-ondemand stop                  # stop the shared daemon and every server it runs
 mcp-ondemand restore [--only a,b]  # put servers back where they came from
@@ -107,6 +110,20 @@ Everything lives in `~/.mcp-ondemand/` (set `MCP_ONDEMAND_HOME` to move it): `se
 | `preload` | `false` | Start it as soon as the daemon starts instead of on the first call |
 | `perSession` | `false` | Give each session its own copy, started in that session's project folder. For servers that keep state between calls, such as a browser |
 | `disabled` | `false` | Keep the entry but do not offer its tools |
+| `maxMemory` | none | MB. A server whose process tree uses more is stopped, never during a call, and starts fresh on its next call |
+
+**For all servers together**, `~/.mcp-ondemand/settings.json`:
+
+```json
+{ "memoryBudget": 2000, "idle": 600 }
+```
+
+| Field | Meaning |
+| --- | --- |
+| `memoryBudget` | MB for all running servers together. Over it, the least recently used idle servers are stopped until it fits |
+| `idle` | The default idle time for servers that do not set their own |
+
+Memory is checked every minute, and only when `maxMemory` or `memoryBudget` is set.
 
 **Secrets out of the file:** `${NAME}` and `${NAME:-fallback}` in `command`, `args`, `env` and `cwd` are read from
 the environment when the server starts. An unset variable without a fallback fails that server with a message
@@ -126,9 +143,12 @@ once in the background the next time a session opens.
   them. It exits a minute after the last session has gone and the last server has stopped. It is started through
   a short-lived launcher, so it is not part of any one session's process tree. Set `MCP_ONDEMAND_SHARED=0` to run
   each session on its own instead, as in 1.1; if the daemon cannot start, a session falls back to that by itself.
-- **Updates:** a session of a newer version asks an older daemon to step aside; it finishes its current sessions
-  and exits while the new one takes over. A changed `servers.json` is picked up by the next session that starts:
-  changed servers are restarted, the rest keep running.
+- **Updates:** a session running different code (a new version, a `git pull`, a local edit: sessions and daemon
+  compare a fingerprint of the code) asks the running daemon to step aside. It finishes its current sessions and
+  exits while the new one takes over. A changed `servers.json` or a rebuilt cache is picked up at once by open
+  sessions, which are told only when what they see actually changed. Changed servers restart, the rest keep running.
+- **Failing servers:** a server that will not start is not retried on every call. It waits 5 s, then 10 s, 20 s and
+  so on up to 5 minutes, and calls meanwhile get its last error at once. `ondemand_restart` retries straight away.
 
 - **Cache:** each server's tools, prompts, resources, resource templates and instructions are stored per server, tied to its command, args,
   env and cwd. Change any of those and the cache is rebuilt. Env values are hashed, never written to the cache.
@@ -153,7 +173,7 @@ once in the background the next time a session opens.
   the plugin off would lose that server too.
 - **Resource subscriptions** (`resources/subscribe`) are not passed through.
 - mcp-ondemand sees everything that passes between Claude and your servers, including the env you configure for
-  them. It runs locally and makes no network requests of its own. Read the code: it is about 1,150 lines.
+  them. It runs locally and makes no network requests of its own. Read the code: it is about 1,300 lines.
 
 ## Compared with others
 
@@ -185,8 +205,9 @@ npm test
 
 The tests run the real proxy against a fake MCP server: lazy start, shared starts, idle stop, long calls,
 crashes, restart, cleanup when the session ends, prompts, resources, progress, cancellation, `${VAR}`, two
-sessions sharing one daemon, perSession servers, a daemon stepping aside for another version and exiting when
-idle, and import and restore of servers and plugins. CI runs them on Linux, macOS and Windows.
+sessions sharing one daemon, perSession servers, a daemon stepping aside for another version, surviving hard
+disconnects and exiting when idle, backoff for failing servers, memory limits, live config changes, and import
+and restore of servers and plugins. CI runs them on Linux, macOS and Windows.
 
 ## License
 

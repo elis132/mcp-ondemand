@@ -1,6 +1,6 @@
 {
   "name": "mcp-ondemand",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Run MCP servers only while they are used. One proxy lists every tool from cache; each server starts on its first call and stops when idle.",
   "type": "module",
   "bin": {

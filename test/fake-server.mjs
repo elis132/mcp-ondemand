@@ -5,6 +5,8 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 
 appendFileSync(process.env.FAKE_LOG, `start ${process.pid}\n`);
+// A server that never comes up, for the backoff tests.
+if (process.env.FAKE_FAIL) process.exit(1);
 const s = new McpServer({ name: "fake", version: "1" }, { instructions: "Fake server instructions." });
 const done = (text) => ({ content: [{ type: "text", text }] });
 

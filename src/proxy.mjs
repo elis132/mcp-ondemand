@@ -1,6 +1,9 @@
 // The proxy: one MCP server that lists the tools, prompts and resources of every configured server from cache,
 // and runs a server's process only while it is being used.
 import { createHash } from "node:crypto";
+import { readdirSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -17,10 +20,18 @@ import {
   ResourceListChangedNotificationSchema,
   ToolListChangedNotificationSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { DEFAULT_IDLE, ensureHome, expand, loadServers, log, readCache, writeCache } from "./config.mjs";
+import { DEFAULT_IDLE, ensureHome, expand, loadServers, loadSettings, log, readCache, watchFiles, writeCache } from "./config.mjs";
 import { killTree, processTable, treeMemory } from "./kill.mjs";
+import { watchdog } from "./watchdog.mjs";
 
-export const VERSION = "1.2.0";
+export const VERSION = "1.3.0";
+// A fingerprint of the code itself. Sessions and daemon compare it, so any change to the code (an update, a
+// git pull, a local edit) replaces a running daemon, not only a new version number.
+const SRC = dirname(fileURLToPath(import.meta.url));
+export const BUILD = createHash("sha1")
+  .update(readdirSync(SRC).filter((f) => f.endsWith(".mjs")).sort().map((f) => readFileSync(join(SRC, f), "utf8")).join("\n"))
+  .digest("hex")
+  .slice(0, 12);
 // Claude Code shows a tool as mcp__<proxy name>__<tool>, and tool names may be at most 64 characters.
 const PREFIX = process.env.MCP_ONDEMAND_NAME ?? "ondemand";
 const MAX_NAME = 64 - `mcp__${PREFIX}__`.length;
@@ -44,7 +55,7 @@ export class Hub {
   }
 
   stat(name) {
-    if (!this.stats.has(name)) this.stats.set(name, { calls: 0, starts: 0, lastError: null });
+    if (!this.stats.has(name)) this.stats.set(name, { calls: 0, starts: 0, lastError: null, failures: 0, retryAt: 0 });
     return this.stats.get(name);
   }
 
@@ -162,15 +173,20 @@ export class Hub {
       client.setNotificationHandler(PromptListChangedNotificationSchema, resync);
       client.setNotificationHandler(ResourceListChangedNotificationSchema, resync);
       await client.connect(transport, { timeout: START_TIMEOUT });
-      Object.assign(entry, { client, pid: transport.pid });
+      Object.assign(entry, { client, pid: transport.pid, lastUsed: Date.now() });
+      Object.assign(this.stat(name), { failures: 0, retryAt: 0 });
       this.stat(name).starts++;
       log("start", name, "pid", transport.pid);
       await this.sync(name, client);
       this.arm(name);
       return entry;
     })().catch(async (err) => {
-      this.stat(name).lastError = String(err?.message ?? err);
-      log("start failed", name, this.stat(name).lastError);
+      // A server that will not start is not retried on every call: 5 s, 10 s, 20 s ... up to 5 minutes.
+      const st = this.stat(name);
+      st.lastError = String(err?.message ?? err);
+      st.failures++;
+      st.retryAt = Date.now() + Math.min(5000 * 2 ** (st.failures - 1), 300_000);
+      log("start failed", name, `(${st.failures}x, next try in ${Math.round((st.retryAt - Date.now()) / 1000)}s)`, st.lastError);
       await this.stop(name, "start failed");
       throw err;
     });
@@ -213,7 +229,7 @@ export class Hub {
     const s = this.live.get(name);
     if (!s) return;
     clearTimeout(s.timer);
-    const idle = this.servers[name].idle ?? DEFAULT_IDLE;
+    const idle = this.servers[name].idle ?? loadSettings().idle ?? DEFAULT_IDLE;
     if (idle > 0 && s.inFlight === 0) {
       s.timer = setTimeout(() => s.inFlight === 0 && this.stop(name, `idle ${idle}s`), idle * 1000);
       s.timer.unref?.();
@@ -222,7 +238,11 @@ export class Hub {
 
   // Run fn against a started server, holding off the idle timer meanwhile.
   async use(name, fn) {
-    this.stat(name).calls++;
+    const st = this.stat(name);
+    st.calls++;
+    if (!this.live.has(name) && st.retryAt > Date.now()) {
+      throw new Error(`MCP server ${name} failed to start ${st.failures} time(s); next try in ${Math.ceil((st.retryAt - Date.now()) / 1000)}s (ondemand_restart retries now). Last error: ${st.lastError}`);
+    }
     let s;
     try {
       s = await this.start(name);
@@ -230,6 +250,7 @@ export class Hub {
       throw new Error(`Could not start MCP server ${name}: ${err?.message ?? err}`);
     }
     s.inFlight++;
+    s.lastUsed = Date.now();
     clearTimeout(s.timer);
     try {
       return await fn(s.client);
@@ -311,6 +332,9 @@ export const instructionsOf = (hubs) => {
   return [first, ...rest.map((t) => t.split("\n\n").slice(1).join("\n\n"))].filter(Boolean).join("\n\n");
 };
 
+// What a client sees from these hubs, to tell real changes from rewrites of the same thing.
+export const signature = (hubs) => JSON.stringify(hubs.map((h) => [h.tools, h.prompts, h.resources, h.templates]));
+
 export function notifyChanged(server) {
   for (const send of ["sendToolListChanged", "sendPromptListChanged", "sendResourceListChanged"]) server[send]().catch(() => {});
 }
@@ -331,6 +355,7 @@ export function bind(server, hubs) {
       const hub = find((h) => h.servers[args?.server]);
       if (!hub) return text(`No server named ${args?.server}`, true);
       await hub.stop(args.server, "restart requested");
+      Object.assign(hub.stat(args.server), { failures: 0, retryAt: 0 });
       return text(`${args.server} stopped. It starts again on its next call.`);
     }
     const hub = find((h) => h.toolMap.has(id));
@@ -379,6 +404,12 @@ export async function serveLocal() {
   const server = new Server({ name: "mcp-ondemand", version: VERSION }, { capabilities: CAPABILITIES, instructions: instructionsOf([hub]) });
   hub.onChanged = () => notifyChanged(server);
   bind(server, [hub]);
+  watchdog(() => [hub]);
+  watchFiles(async () => {
+    const before = signature([hub]);
+    await hub.reload(loadServers());
+    if (signature([hub]) !== before) notifyChanged(server);
+  });
   let ending = false;
   const shutdown = async () => {
     if (ending) return;

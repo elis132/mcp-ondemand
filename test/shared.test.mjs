@@ -107,6 +107,11 @@ test("sessions share servers through one daemon, which leaves when they are gone
     assert.ok(alive(ownB));
     assert.equal(text(await b.callTool({ name: "shared__echo", arguments: { text: "c" } })), "echo:c");
 
+    // "mcp-ondemand status" asks the daemon what runs.
+    const { execFileSync } = await import("node:child_process");
+    const out = execFileSync(process.execPath, [join(root, "bin", "mcp-ondemand.mjs"), "status"], { env: { ...process.env, MCP_ONDEMAND_HOME: home }, encoding: "utf8" });
+    assert.match(out, /shared: running, pid \d+, \d+ MB/);
+
     // Sessions that hang up hard, mid-handshake, do not bring the daemon down.
     await Promise.all(Array.from({ length: 10 }, () => new Promise((resolve) => {
       const s = net.connect(SOCKET, () => {

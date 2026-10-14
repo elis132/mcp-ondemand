@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.3.0 (2026-10-14)
+
+- Memory limits: `maxMemory` per server restarts a server that grows past it; `memoryBudget` in the new
+  `settings.json` keeps all servers under a total by stopping the least recently used idle ones. Off unless set.
+- A server that will not start is retried with a growing pause (5 s up to 5 minutes) instead of on every call.
+  `ondemand_restart` resets it.
+- Changes to `servers.json`, `settings.json` and rebuilt caches reach open sessions at once; sessions are notified
+  only when what they see changed.
+- `status` asks the running daemon: what runs, with memory.
+- Sessions and daemon compare a fingerprint of the code, so any code change replaces a running daemon, not only a
+  new version number.
+- Fixed: the daemon could crash when a session hung up hard, and could end without cleaning up after draining.
+
 ## 1.2.0 (2026-10-14)
 
 - Shared daemon: sessions share one copy of each server instead of starting their own. Started by the first

@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { CLAUDE_JSON, ENTRY, importPlugins, importServers, pluginServers, restoreServers } from "../src/claude-config.mjs";
 import { DEFAULT_IDLE, expand, HOME, loadServers, readCache, SERVERS } from "../src/config.mjs";
-import { daemonPid, launchDaemon, runDaemon, serve, stopDaemon } from "../src/daemon.mjs";
+import { daemonPid, launchDaemon, liveStatus, runDaemon, serve, stopDaemon } from "../src/daemon.mjs";
 import { refresh, VERSION } from "../src/proxy.mjs";
 
 const HELP = `mcp-ondemand ${VERSION}: MCP servers that only run while they are used.
@@ -120,7 +120,13 @@ switch (cmd) {
     process.exit((await refresh(rest[0] ? [rest[0]] : undefined)) ? 1 : 0);
   case "status": {
     const pid = daemonPid();
-    console.log(pid ? `Shared daemon running, pid ${pid}. Ask it for live details with the ondemand_status tool.\n` : "Shared daemon not running (it starts with the first session).\n");
+    const live = pid ? await liveStatus() : null;
+    if (live) {
+      console.log(`Shared daemon running, pid ${pid}:\n`);
+      for (const l of live) console.log(`  ${l}`);
+      break;
+    }
+    console.log(pid ? `Shared daemon running, pid ${pid}, but it did not answer.\n` : "Shared daemon not running (it starts with the first session).\n");
     const servers = loadServers();
     if (!Object.keys(servers).length) console.log("No servers configured. Run: mcp-ondemand import");
     for (const [name, s] of Object.entries(servers)) {
