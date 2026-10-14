@@ -2,10 +2,14 @@
 // mcp-ondemand: run MCP servers only while they are used.
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { CLAUDE_JSON, ENTRY, importPlugins, importServers, pluginServers, restoreServers } from "../src/claude-config.mjs";
 import { DEFAULT_IDLE, expand, HOME, loadServers, readCache, SERVERS } from "../src/config.mjs";
-import { daemonPid, launchDaemon, liveStatus, runDaemon, serve, stopDaemon } from "../src/daemon.mjs";
-import { refresh, VERSION } from "../src/proxy.mjs";
+import { VERSION } from "../src/build.mjs";
+import { daemonPid, launchDaemon, serve } from "../src/session.mjs";
+// The MCP SDK is loaded only by the commands that need it: "serve" in shared mode is a plain pipe and stays small.
+const refresh = async (...args) => (await import("../src/proxy.mjs")).refresh(...args);
+const daemon = () => import("../src/daemon.mjs");
 
 const HELP = `mcp-ondemand ${VERSION}: MCP servers that only run while they are used.
 
@@ -18,6 +22,8 @@ const HELP = `mcp-ondemand ${VERSION}: MCP servers that only run while they are 
   mcp-ondemand refresh [name]      start servers once to rebuild their cache
   mcp-ondemand status              configured servers, their cache, and the shared daemon
   mcp-ondemand stop                stop the shared daemon and every server it runs
+  mcp-ondemand bench [servers.json]  measure what servers cost and what mcp-ondemand saves
+                                   (popular servers by default; pass ~/.mcp-ondemand/servers.json for yours)
   mcp-ondemand doctor              check the setup and say what is wrong
   mcp-ondemand restore [--only a,b]  put servers back where they came from
 
@@ -120,7 +126,7 @@ switch (cmd) {
     process.exit((await refresh(rest[0] ? [rest[0]] : undefined)) ? 1 : 0);
   case "status": {
     const pid = daemonPid();
-    const live = pid ? await liveStatus() : null;
+    const live = pid ? await (await daemon()).liveStatus() : null;
     if (live) {
       console.log(`Shared daemon running, pid ${pid}:\n`);
       for (const l of live) console.log(`  ${l}`);
@@ -136,13 +142,13 @@ switch (cmd) {
     break;
   }
   case "daemon":
-    await runDaemon();
+    await (await daemon()).runDaemon();
     break;
   case "daemon-launch":
     launchDaemon();
     process.exit(0);
   case "stop": {
-    const pid = stopDaemon();
+    const pid = (await daemon()).stopDaemon();
     console.log(pid ? `Stopped the daemon (pid ${pid}) and its servers. Open sessions reconnect on their next start.` : "No daemon running.");
     break;
   }
@@ -154,6 +160,11 @@ switch (cmd) {
     if (r.plugins.length) console.log(`Switched plugins back on: ${r.plugins.join(", ")}`);
     console.log(`Backup of the old config: ${r.backup}\nRestart Claude Code to use it.`);
     break;
+  }
+  case "bench": {
+    const { spawnSync: run } = await import("node:child_process");
+    const script = new URL("../bench/measure.mjs", import.meta.url);
+    process.exit(run(process.execPath, [fileURLToPath(script), ...rest], { stdio: "inherit" }).status ?? 1);
   }
   case "--version":
   case "-v":

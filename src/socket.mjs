@@ -1,14 +1,7 @@
 // MCP over a local socket (a named pipe on Windows), between session proxies and the shared daemon.
-import { createHash } from "node:crypto";
-import { join } from "node:path";
 import { ReadBuffer, serializeMessage } from "@modelcontextprotocol/sdk/shared/stdio.js";
-import { HOME } from "./config.mjs";
 
-// One daemon per home folder, so separate setups (and the tests) never meet.
-export const SOCKET =
-  process.platform === "win32"
-    ? `\\\\.\\pipe\\mcp-ondemand-${createHash("sha1").update(HOME.toLowerCase()).digest("hex").slice(0, 12)}`
-    : join(HOME, "daemon.sock");
+export { SOCKET } from "./config.mjs";
 
 export class SocketTransport {
   // initial: bytes already read from the socket (after the daemon's handshake line).

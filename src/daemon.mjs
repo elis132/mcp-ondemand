@@ -1,55 +1,22 @@
 // Shared mode: one daemon per user runs the servers, and every session's proxy is a pipe to it. Five sessions using
 // the same server then share one copy of it. Servers marked perSession (a browser, say) get one copy per session.
-import { spawn } from "node:child_process";
 import { existsSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import net from "node:net";
-import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { ensureHome, HOME, loadServers, log, SERVERS, watchFiles } from "./config.mjs";
+import { ensureHome, loadServers, log, PIDFILE, SERVERS, SOCKET, watchFiles } from "./config.mjs";
 import { killTree } from "./kill.mjs";
-import { bind, BUILD, CAPABILITIES, Hub, instructionsOf, notifyChanged, serveLocal, signature, VERSION } from "./proxy.mjs";
+import { BUILD, VERSION } from "./build.mjs";
+import { bind, CAPABILITIES, Hub, instructionsOf, notifyChanged, signature } from "./proxy.mjs";
+import { connect, daemonPid, line, readLine } from "./session.mjs";
 import { watchdog } from "./watchdog.mjs";
-import { SOCKET, SocketTransport } from "./socket.mjs";
+import { SocketTransport } from "./socket.mjs";
 
-const BIN = fileURLToPath(new URL("../bin/mcp-ondemand.mjs", import.meta.url));
-export const PIDFILE = join(HOME, "daemon.pid");
 // How long the daemon stays after the last session has gone and the last server has stopped.
 const LINGER = Number(process.env.MCP_ONDEMAND_LINGER ?? 60) * 1000;
 
 const pick = (servers, perSession) => Object.fromEntries(Object.entries(servers).filter(([, s]) => Boolean(s.perSession) === perSession));
 const mtime = () => (existsSync(SERVERS) ? statSync(SERVERS).mtimeMs : 0);
-const line = (value) => `${JSON.stringify({ ondemand: value })}\n`;
-
-// Read one newline-terminated JSON line from a socket. Returns it and whatever came after it.
-function readLine(socket, ms = 5000) {
-  return new Promise((resolve, reject) => {
-    let buf = Buffer.alloc(0);
-    const timer = setTimeout(() => done(new Error("no handshake")), ms);
-    const done = (err, value) => {
-      clearTimeout(timer);
-      socket.off("data", onData);
-      socket.off("error", done);
-      socket.off("close", onClose);
-      err ? reject(err) : resolve(value);
-    };
-    const onClose = () => done(new Error("closed"));
-    const onData = (chunk) => {
-      buf = Buffer.concat([buf, chunk]);
-      const i = buf.indexOf(10);
-      if (i < 0) return;
-      try {
-        done(null, { message: JSON.parse(buf.subarray(0, i).toString("utf8")).ondemand, rest: buf.subarray(i + 1) });
-      } catch (err) {
-        done(err);
-      }
-    };
-    socket.on("data", onData);
-    socket.on("error", done);
-    socket.on("close", onClose);
-  });
-}
 
 // ---- the daemon ----
 
@@ -187,66 +154,6 @@ async function listen(listener) {
   }
 }
 
-// ---- the session side ----
-
-function connect() {
-  return new Promise((resolve, reject) => {
-    const socket = net.connect(SOCKET);
-    socket.once("connect", () => {
-      socket.off("error", reject);
-      resolve(socket);
-    });
-    socket.once("error", reject);
-  });
-}
-
-// Started through a short-lived launcher, so the daemon is not a child of this session's process: a client that
-// kills the session's process tree must not take the daemon, and every other session, with it.
-function launch() {
-  spawn(process.execPath, [BIN, "daemon-launch"], { detached: true, stdio: "ignore", windowsHide: true, cwd: HOME }).unref();
-}
-
-export function launchDaemon() {
-  spawn(process.execPath, [BIN, "daemon"], { detached: true, stdio: "ignore", windowsHide: true, cwd: HOME }).unref();
-}
-
-async function session() {
-  for (let attempt = 0; attempt < 2; attempt++) {
-    let socket = await connect().catch(() => null);
-    if (!socket) {
-      launch();
-      for (let i = 0; i < 50 && !socket; i++) {
-        await new Promise((r) => setTimeout(r, 200));
-        socket = await connect().catch(() => null);
-      }
-    }
-    if (!socket) return null;
-    socket.write(line({ version: VERSION, build: BUILD, cwd: process.cwd() }));
-    const reply = await readLine(socket).catch(() => null);
-    if (reply?.message === "ok") return { socket, rest: reply.rest };
-    // An older daemon is stepping aside; the next round starts ours.
-    socket.destroy();
-    await new Promise((r) => setTimeout(r, 300));
-  }
-  return null;
-}
-
-export async function serve() {
-  if (process.env.MCP_ONDEMAND_SHARED === "0") return serveLocal();
-  const s = await session();
-  if (!s) {
-    log("daemon unavailable, running this session locally");
-    return serveLocal();
-  }
-  const { socket, rest } = s;
-  if (rest.length) process.stdout.write(rest);
-  process.stdin.pipe(socket);
-  socket.pipe(process.stdout);
-  process.stdin.on("end", () => socket.end());
-  socket.on("close", () => process.exit(0));
-  socket.on("error", () => process.exit(1));
-}
-
 // Ask the running daemon what runs, as a short session of its own. Null when no daemon answers.
 export async function liveStatus() {
   const socket = await connect().catch(() => null);
@@ -262,17 +169,6 @@ export async function liveStatus() {
     return result.content[0].text.split("\n").filter((l) => !l.endsWith("(this session)"));
   } catch {
     socket.destroy();
-    return null;
-  }
-}
-
-// Running daemon's pid, if any.
-export function daemonPid() {
-  try {
-    const pid = Number(readFileSync(PIDFILE, "utf8"));
-    process.kill(pid, 0);
-    return pid;
-  } catch {
     return null;
   }
 }

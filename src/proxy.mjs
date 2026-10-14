@@ -1,9 +1,6 @@
 // The proxy: one MCP server that lists the tools, prompts and resources of every configured server from cache,
 // and runs a server's process only while it is being used.
 import { createHash } from "node:crypto";
-import { readdirSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -24,14 +21,8 @@ import { DEFAULT_IDLE, ensureHome, expand, loadServers, loadSettings, log, readC
 import { killTree, processTable, treeMemory } from "./kill.mjs";
 import { watchdog } from "./watchdog.mjs";
 
-export const VERSION = "1.3.0";
-// A fingerprint of the code itself. Sessions and daemon compare it, so any change to the code (an update, a
-// git pull, a local edit) replaces a running daemon, not only a new version number.
-const SRC = dirname(fileURLToPath(import.meta.url));
-export const BUILD = createHash("sha1")
-  .update(readdirSync(SRC).filter((f) => f.endsWith(".mjs")).sort().map((f) => readFileSync(join(SRC, f), "utf8")).join("\n"))
-  .digest("hex")
-  .slice(0, 12);
+export { BUILD, VERSION } from "./build.mjs";
+import { VERSION } from "./build.mjs";
 // Claude Code shows a tool as mcp__<proxy name>__<tool>, and tool names may be at most 64 characters.
 const PREFIX = process.env.MCP_ONDEMAND_NAME ?? "ondemand";
 const MAX_NAME = 64 - `mcp__${PREFIX}__`.length;

@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.4.0 (2026-10-14)
+
+- A session's pipe to the daemon no longer loads the MCP SDK: 49 MB per open session instead of 65.
+- `mcp-ondemand bench` measures what your servers cost and what mcp-ondemand saves.
+- Published on npm: `npm install -g mcp-ondemand`.
+
 ## 1.3.0 (2026-10-14)
 
 - Memory limits: `maxMemory` per server restarts a server that grows past it; `memoryBudget` in the new

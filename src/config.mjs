@@ -11,6 +11,12 @@ export const BACKUPS = join(HOME, "backups");
 export const LOG = join(HOME, "ondemand.log");
 export const SETTINGS = join(HOME, "settings.json");
 export const DEFAULT_IDLE = 600;
+export const PIDFILE = join(HOME, "daemon.pid");
+// One daemon per home folder, so separate setups (and the tests) never meet.
+export const SOCKET =
+  process.platform === "win32"
+    ? `\\\\.\\pipe\\mcp-ondemand-${createHash("sha1").update(HOME.toLowerCase()).digest("hex").slice(0, 12)}`
+    : join(HOME, "daemon.sock");
 
 // Settings for all servers together: { "memoryBudget": MB, "idle": seconds }. Missing or unreadable: none.
 export function loadSettings() {

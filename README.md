@@ -1,28 +1,61 @@
 # mcp-ondemand
 
-**MCP servers that only run while they are used.**
+**Your MCP servers, running only while they are used.** One small proxy shows Claude every tool, starts a server
+on its first call, shares it between all your open sessions, and stops it when it goes idle.
 
-Claude Code starts every configured MCP server when a session opens, keeps all of them running for the whole
-session, and with several sessions open you get several copies of each. Ten servers and four sessions is forty
-processes, most of them never called. Some are left behind after their session ends.
+[![test](https://github.com/elis132/mcp-ondemand/actions/workflows/test.yml/badge.svg)](https://github.com/elis132/mcp-ondemand/actions/workflows/test.yml)
 
-mcp-ondemand is one small MCP server that sits in front of all the others:
+## Why
 
-- **Claude sees every real tool at once**, answered from a cache on disk. Nothing else is started.
-- **A server starts on its first tool call**, and stops after it has been idle for a while (10 minutes by default).
-  A call that is still running is never cut off.
-- **Sessions share servers.** Five Claude sessions using the same server run one copy of it, not five. Servers that
-  hold state, like a browser, can be kept per session instead.
-- **Nothing is left behind.** Idle servers are stopped, a session's own servers die with it, and the whole process
-  tree goes, including the children that launchers like `npx`, `uvx`, `cmd` and `wsl` start.
-- **Your tools keep their real names and schemas**, so Claude Code's per-tool permissions keep working. No
-  meta-tools, no extra round trips to find a tool.
-- **Prompts and resources pass through too**, and so do progress reports and cancellation: press Esc and the call
-  stops on the real server, not just in Claude.
-- **Plugin MCP servers too:** `import --plugins` moves the servers of your Claude Code plugins behind it.
-- **Memory limits, if you want them:** restart a server that grows past its own limit, or keep all servers together
-  under a budget by stopping the least recently used idle ones.
-- **Changes apply at once:** edit `servers.json` or run `refresh`, and open sessions see the new tools without a restart.
+Claude Code starts **every** configured MCP server the moment a session opens, keeps all of them running until it
+closes, and does it again for **every** session. Most of those servers are never called. Each one is a full
+Node.js or Python process, usually behind a launcher like `npx` or `uvx` that is a process of its own.
+
+Measured with six popular servers, started through `npx` as most setups do:
+
+| Server | Memory while running | Start time |
+| --- | ---: | ---: |
+| playwright | 259 MB | 6.4 s |
+| github | 208 MB | 3.9 s |
+| filesystem | 217 MB | 5.3 s |
+| memory | 213 MB | 5.4 s |
+| sequential-thinking | 216 MB | 4.5 s |
+| context7 | 237 MB | 5.6 s |
+| **All six** | **1,350 MB** | |
+
+mcp-ondemand itself costs 49 MB per open session plus 66 MB once for its shared daemon. With those six servers
+configured:
+
+| Open sessions | Without mcp-ondemand | With it, idle | With it, two servers in use |
+| ---: | ---: | ---: | ---: |
+| 1 | 1,350 MB, 6 servers | 115 MB | 611 MB |
+| 3 | 4,050 MB, 18 servers | 213 MB | 709 MB |
+| 5 | 6,750 MB, 30 servers | 311 MB | 807 MB |
+
+Five open sessions go from **6.8 GB to under 0.9 GB**, even with two servers busy. Add servers and the gap grows:
+without mcp-ondemand each one costs memory in every session whether you use it or not; with it, a server you
+don't call costs nothing.
+
+**What you give up:** the first call to a stopped server waits for it to start, a few seconds (the start times
+above). After that it answers at full speed until it has been idle for 10 minutes.
+
+Numbers from Windows 11 and Node 22; on Linux and macOS the launchers are lighter, the ratio stays. Measure your
+own: `mcp-ondemand bench` for these six, `mcp-ondemand bench ~/.mcp-ondemand/servers.json` for your servers.
+
+## What it does
+
+- **Every tool, nothing running.** Claude sees all your tools with their real names and schemas, answered from a
+  cache on disk. Claude Code's per-tool permissions keep working: no meta-tools, no extra round trips.
+- **Starts on first use, stops when idle.** 10 minutes by default, never while a call is running.
+- **Shared between sessions.** Five open sessions using the same server run one copy of it. Servers that hold state,
+  like a browser, can be kept per session instead.
+- **Nothing left behind.** Stopping kills the whole process tree, launchers included, and a session's own servers
+  end with it. No more stray servers from sessions closed hours ago.
+- **Complete pass-through.** Prompts, resources, progress reports and cancellation reach the real server: press Esc
+  and the call stops there, not just in Claude.
+- **Optional memory limits.** Restart a server that grows past its own limit, or keep all of them under one budget.
+- **Easy to adopt, easy to leave.** `import` moves your existing servers (and plugin servers) over with a backup,
+  `restore` puts them back. Changes to the config reach open sessions at once.
 
 ```
 Claude session 1 ─┐                      ┌── github       (running, shared)
@@ -35,9 +68,8 @@ Claude session 3 ─┘     daemon           └── ...          (stopped)
 Needs Node.js 20 or newer.
 
 ```bash
-git clone https://github.com/elis132/mcp-ondemand.git ~/mcp-ondemand
-cd ~/mcp-ondemand && npm install
-node bin/mcp-ondemand.mjs import
+npm install -g mcp-ondemand
+mcp-ondemand import
 ```
 
 `import` moves the local (stdio) MCP servers from your user-level Claude Code config (`~/.claude.json`) behind
@@ -47,13 +79,28 @@ build its tool cache. Remote (HTTP/SSE) servers have no local process and are le
 Servers that come from Claude Code plugins (Playwright, for example) are moved separately:
 
 ```bash
-node bin/mcp-ondemand.mjs import --plugins
+mcp-ondemand import --plugins
 ```
 
 That switches those plugins off, so they stop starting their own copy. Restart Claude Code. `claude mcp list` should
-show `ondemand` as connected, and `node bin/mcp-ondemand.mjs doctor` checks the whole setup.
+show `ondemand` as connected, and `mcp-ondemand doctor` checks the whole setup.
+
+Update with `npm update -g mcp-ondemand`: the running daemon notices the new code and hands over by itself.
 
 **Or let your agent do it:** paste [SETUP_PROMPT.md](SETUP_PROMPT.md) into Claude Code, Codex or similar.
+
+<details>
+<summary>From source instead</summary>
+
+```bash
+git clone https://github.com/elis132/mcp-ondemand.git ~/mcp-ondemand
+cd ~/mcp-ondemand && npm install
+node bin/mcp-ondemand.mjs import
+```
+
+Use `node ~/mcp-ondemand/bin/mcp-ondemand.mjs` wherever this README says `mcp-ondemand`, or run `npm link` once in
+the folder.
+</details>
 
 ## Use
 
@@ -77,10 +124,10 @@ mcp-ondemand refresh [name]        # start servers once to rebuild their cache
 mcp-ondemand status                # what runs now, with memory (asks the daemon), or the configured servers
 mcp-ondemand doctor                # check the setup and say what to fix
 mcp-ondemand stop                  # stop the shared daemon and every server it runs
+mcp-ondemand bench [servers.json]  # measure what your servers cost, with and without mcp-ondemand
 mcp-ondemand restore [--only a,b]  # put servers back where they came from
 ```
 
-(`node bin/mcp-ondemand.mjs <command>` if it is not on your PATH, or `npm link` once in the repo.)
 
 ## Configure
 
@@ -149,7 +196,6 @@ once in the background the next time a session opens.
   sessions, which are told only when what they see actually changed. Changed servers restart, the rest keep running.
 - **Failing servers:** a server that will not start is not retried on every call. It waits 5 s, then 10 s, 20 s and
   so on up to 5 minutes, and calls meanwhile get its last error at once. `ondemand_restart` retries straight away.
-
 - **Cache:** each server's tools, prompts, resources, resource templates and instructions are stored per server, tied to its command, args,
   env and cwd. Change any of those and the cache is rebuilt. Env values are hashed, never written to the cache.
 - **Staying current:** whenever a server runs, its live tool list is compared with the cache. If they differ, the
@@ -162,7 +208,8 @@ once in the background the next time a session opens.
 
 ## Limits
 
-- **The first call to a stopped server is slower**, by however long that server takes to start (usually 1 to 5 seconds).
+- **The first call to a stopped server is slower**, by however long that server takes to start (4 to 6 seconds for
+  the servers measured above).
 - **Stopping a server loses its state.** A browser automation server forgets its open page. Give such servers a
   longer `idle`, or `0`, and `perSession` so sessions do not share one browser.
 - **Shared servers run in the daemon's environment**: the environment of the session that started it, with the
@@ -173,7 +220,7 @@ once in the background the next time a session opens.
   the plugin off would lose that server too.
 - **Resource subscriptions** (`resources/subscribe`) are not passed through.
 - mcp-ondemand sees everything that passes between Claude and your servers, including the env you configure for
-  them. It runs locally and makes no network requests of its own. Read the code: it is about 1,300 lines.
+  them. It runs locally and makes no network requests of its own. Read the code: it is about 1,350 lines.
 
 ## Compared with others
 
@@ -201,6 +248,7 @@ puts every server back where `import` found it. Every change to `~/.claude.json`
 ```bash
 npm install
 npm test
+node bench/measure.mjs      # the measurements at the top of this README (same as mcp-ondemand bench)
 ```
 
 The tests run the real proxy against a fake MCP server: lazy start, shared starts, idle stop, long calls,
