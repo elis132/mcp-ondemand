@@ -17,14 +17,17 @@ Install mcp-ondemand (https://github.com/elis132/mcp-ondemand) so my local MCP s
    node ~/mcp-ondemand/bin/mcp-ondemand.mjs import
    It backs up ~/.claude.json first and prints where. Tell me the backup path.
 5. If any server failed to start while building its cache, show me its error. Common causes: a broken npm cache
-   (try `npm cache verify`), a missing command on PATH, or a server that needs credentials. Fix what you can,
+   (try `npm cache verify`), a missing command on PATH, or a server that needs credentials. If a secret sits in
+   servers.json in plain text, offer to move it to an environment variable and use "${NAME}" there instead. Fix what you can,
    then run: node ~/mcp-ondemand/bin/mcp-ondemand.mjs refresh <name>
 6. Check the result with `claude mcp list` (it should show `ondemand` as connected) and
    `node ~/mcp-ondemand/bin/mcp-ondemand.mjs status`.
-7. Ask me whether I also want MCP servers that come from Claude Code plugins moved behind it. For each one I pick:
-   copy the server entry from the plugin's .mcp.json into ~/.mcp-ondemand/servers.json, run `refresh <name>`,
-   then disable that plugin with `claude plugin disable <plugin>`. Servers that keep state between calls (a
-   browser, for example) should get "idle": 1800 or more.
+7. Show me which Claude Code plugins run their own MCP servers:
+   node ~/mcp-ondemand/bin/mcp-ondemand.mjs import --plugins --dry-run
+   Ask me which to move. Then run it with --only <the ones I picked> (without --dry-run). It switches those
+   plugins off, backs up the settings, and builds their caches. Servers that keep state between calls (a browser,
+   for example) should get "idle": 1800 or more in ~/.mcp-ondemand/servers.json.
+   Finally run: node ~/mcp-ondemand/bin/mcp-ondemand.mjs doctor, and fix what it reports.
 8. Tell me: tools are now named mcp__ondemand__<server>__<tool>, the first call to a stopped server takes a few
    seconds, I need to restart Claude Code, and `node ~/mcp-ondemand/bin/mcp-ondemand.mjs restore` undoes everything.
 
